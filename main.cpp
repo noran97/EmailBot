@@ -809,12 +809,12 @@ public:
                 // Mark original email as read
                 bool marked = gmail.markAsRead(email.id);
                 if (marked) {
-                    std::cout << "✓ Successfully processed and replied to email." << std::endl;
+                    std::cout << " Successfully processed and replied to email." << std::endl;
                 } else {
-                    std::cout << "✓ Email sent, but failed to mark as read." << std::endl;
+                    std::cout << "Email sent, but failed to mark as read." << std::endl;
                 }
             } else {
-                std::cerr << "✗ Failed to send reply." << std::endl;
+                std::cerr << " Failed to send reply." << std::endl;
             }
             
             // Add a small delay between processing emails
