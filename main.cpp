@@ -321,127 +321,125 @@ void extractAttachmentsFromPart(const json& part, std::vector<Attachment>& attac
         
         return "";
     }
-    bool authenticate(const std::string& credentialsFile) {
-        try {
-            std::ifstream file(credentialsFile);
-            if (!file.is_open()) {
-                std::cerr << "Failed to open credentials file: " << credentialsFile << std::endl;
-                return false;
-            }
-            
-            json credentials;
-            file >> credentials;
-            
-            // Check if this is a service account or OAuth2 credentials
-            if (credentials.contains("type") && credentials["type"] == "service_account") {
-                std::cerr << "Service account authentication is not suitable for Gmail API access to personal emails." << std::endl;
-                std::cerr << "Please use OAuth2 credentials instead." << std::endl;
-                return false;
-            } else {
-                return authenticateOAuth2(credentials);
-            }
-        } catch (const std::exception& e) {
-            std::cerr << "Authentication error: " << e.what() << std::endl;
+bool authenticate(const std::string& credentialsFile, const std::string& tokenFile = "refresh_token.txt") {
+    try {
+        std::ifstream file(credentialsFile);
+        if (!file.is_open()) {
+            std::cerr << "Failed to open credentials file: " << credentialsFile << std::endl;
             return false;
         }
+        
+        json credentials;
+        file >> credentials;
+        
+        // Check if this is a service account or OAuth2 credentials
+        if (credentials.contains("type") && credentials["type"] == "service_account") {
+            std::cerr << "Service account authentication is not suitable for Gmail API access to personal emails." << std::endl;
+            std::cerr << "Please use OAuth2 credentials instead." << std::endl;
+            return false;
+        } else {
+            return authenticateOAuth2(credentials, tokenFile);
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "Authentication error: " << e.what() << std::endl;
+        return false;
+    }
+}
+bool authenticateOAuth2(const json& credentials, const std::string& tokenFile = "refresh_token.txt") {
+    try {
+        // Check if we have a refresh token saved
+        std::ifstream tokenFileStream(tokenFile);
+        std::string refreshToken;
+        
+        if (tokenFileStream.is_open()) {
+            std::getline(tokenFileStream, refreshToken);
+            tokenFileStream.close();
+            
+            if (!refreshToken.empty()) {
+                std::cout << "Using saved refresh token from " << tokenFile << "..." << std::endl;
+                return refreshAccessToken(credentials, refreshToken);
+            }
+        }
+        
+        // If no refresh token, we need to do the OAuth2 flow
+        return performOAuth2Flow(credentials, tokenFile);
+        
+    } catch (const std::exception& e) {
+        std::cerr << "OAuth2 authentication error: " << e.what() << std::endl;
+        return false;
+    }
+}
+bool performOAuth2Flow(const json& credentials, const std::string& tokenFile = "refresh_token.txt") {
+    std::string clientId, clientSecret;
+    
+    // Handle both desktop app and web app credential formats
+    if (credentials.contains("installed")) {
+        clientId = credentials["installed"]["client_id"];
+        clientSecret = credentials["installed"]["client_secret"];
+    } else if (credentials.contains("web")) {
+        clientId = credentials["web"]["client_id"];
+        clientSecret = credentials["web"]["client_secret"];
+    } else {
+        std::cerr << "Invalid OAuth2 credentials format" << std::endl;
+        return false;
     }
     
-    bool authenticateOAuth2(const json& credentials) {
-        try {
-            // Check if we have a refresh token saved
-            std::ifstream tokenFile("refresh_token.txt");
-            std::string refreshToken;
-            
-            if (tokenFile.is_open()) {
-                std::getline(tokenFile, refreshToken);
-                tokenFile.close();
-                
-                if (!refreshToken.empty()) {
-                    std::cout << "Using saved refresh token..." << std::endl;
-                    return refreshAccessToken(credentials, refreshToken);
-                }
-            }
-            
-            // If no refresh token, we need to do the OAuth2 flow
-            return performOAuth2Flow(credentials);
-            
-        } catch (const std::exception& e) {
-            std::cerr << "OAuth2 authentication error: " << e.what() << std::endl;
-            return false;
-        }
+    // Generate authorization URL
+    std::string scope = "https://www.googleapis.com/auth/gmail.modify";
+    std::string redirectUri = "urn:ietf:wg:oauth:2.0:oob"; // For desktop apps
+    
+    std::string authUrl = "https://accounts.google.com/o/oauth2/v2/auth?"
+                         "client_id=" + clientId +
+                         "&redirect_uri=" + redirectUri +
+                         "&scope=" + scope +
+                         "&response_type=code" +
+                         "&access_type=offline";
+    
+    std::cout << "\n=== OAuth2 Setup Required ===" << std::endl;
+    std::cout << "1. Open this URL in your browser:" << std::endl;
+    std::cout << authUrl << std::endl;
+    std::cout << "\n2. Complete the authorization" << std::endl;
+    std::cout << "3. Copy the authorization code and paste it here: ";
+    
+    std::string authCode;
+    std::getline(std::cin, authCode);
+    
+    if (authCode.empty()) {
+        std::cerr << "No authorization code provided" << std::endl;
+        return false;
     }
     
-    bool performOAuth2Flow(const json& credentials) {
-        std::string clientId, clientSecret;
+    // Exchange authorization code for tokens
+    std::string postData = "code=" + authCode +
+                          "&client_id=" + clientId +
+                          "&client_secret=" + clientSecret +
+                          "&redirect_uri=" + redirectUri +
+                          "&grant_type=authorization_code";
+    
+    HttpResponse response = makeHttpRequest("https://oauth2.googleapis.com/token",
+                                          {"Content-Type: application/x-www-form-urlencoded"},
+                                          postData);
+    
+    if (response.response_code == 200) {
+        json tokenResponse = json::parse(response.data);
+        accessToken = tokenResponse["access_token"];
         
-        // Handle both desktop app and web app credential formats
-        if (credentials.contains("installed")) {
-            clientId = credentials["installed"]["client_id"];
-            clientSecret = credentials["installed"]["client_secret"];
-        } else if (credentials.contains("web")) {
-            clientId = credentials["web"]["client_id"];
-            clientSecret = credentials["web"]["client_secret"];
-        } else {
-            std::cerr << "Invalid OAuth2 credentials format" << std::endl;
-            return false;
+        if (tokenResponse.contains("refresh_token")) {
+            std::string refreshToken = tokenResponse["refresh_token"];
+            // Save refresh token to the specified file
+            std::ofstream tokenFileStream(tokenFile);
+            tokenFileStream << refreshToken;
+            tokenFileStream.close();
+            std::cout << "Refresh token saved to " << tokenFile << std::endl;
         }
         
-        // Generate authorization URL
-        std::string scope = "https://www.googleapis.com/auth/gmail.modify";
-        std::string redirectUri = "urn:ietf:wg:oauth:2.0:oob"; // For desktop apps
-        
-        std::string authUrl = "https://accounts.google.com/o/oauth2/v2/auth?"
-                             "client_id=" + clientId +
-                             "&redirect_uri=" + redirectUri +
-                             "&scope=" + scope +
-                             "&response_type=code" +
-                             "&access_type=offline";
-        
-        std::cout << "\n=== OAuth2 Setup Required ===" << std::endl;
-        std::cout << "1. Open this URL in your browser:" << std::endl;
-        std::cout << authUrl << std::endl;
-        std::cout << "\n2. Complete the authorization" << std::endl;
-        std::cout << "3. Copy the authorization code and paste it here: ";
-        
-        std::string authCode;
-        std::getline(std::cin, authCode);
-        
-        if (authCode.empty()) {
-            std::cerr << "No authorization code provided" << std::endl;
-            return false;
-        }
-        
-        // Exchange authorization code for tokens
-        std::string postData = "code=" + authCode +
-                              "&client_id=" + clientId +
-                              "&client_secret=" + clientSecret +
-                              "&redirect_uri=" + redirectUri +
-                              "&grant_type=authorization_code";
-        
-        HttpResponse response = makeHttpRequest("https://oauth2.googleapis.com/token",
-                                              {"Content-Type: application/x-www-form-urlencoded"},
-                                              postData);
-        
-        if (response.response_code == 200) {
-            json tokenResponse = json::parse(response.data);
-            accessToken = tokenResponse["access_token"];
-            
-            if (tokenResponse.contains("refresh_token")) {
-                std::string refreshToken = tokenResponse["refresh_token"];
-                // Save refresh token for future use
-                std::ofstream tokenFile("refresh_token.txt");
-                tokenFile << refreshToken;
-                tokenFile.close();
-                std::cout << "Refresh token saved for future use." << std::endl;
-            }
-            
-            std::cout << "OAuth2 authentication successful!" << std::endl;
-            return true;
-        } else {
-            std::cerr << "Token exchange failed (HTTP " << response.response_code << "): " << response.data << std::endl;
-            return false;
-        }
+        std::cout << "OAuth2 authentication successful!" << std::endl;
+        return true;
+    } else {
+        std::cerr << "Token exchange failed (HTTP " << response.response_code << "): " << response.data << std::endl;
+        return false;
     }
+}
     
     bool refreshAccessToken(const json& credentials, const std::string& refreshToken) {
         try {
@@ -493,7 +491,7 @@ void extractAttachmentsFromPart(const json& part, std::vector<Attachment>& attac
                 return emails;
             }
             
-            std::string url = "https://gmail.googleapis.com/gmail/v1/users/me/messages?q=is:unread&maxResults=10";
+            std::string url = "https://gmail.googleapis.com/gmail/v1/users/me/messages?q=is:unread&maxResults=1";
             std::vector<std::string> headers = {"Authorization: Bearer " + accessToken};
             
             std::cout << "Making request to: " << url << std::endl;
@@ -700,24 +698,26 @@ private:
     GmailClient gmail;
     LlamaWrapper llama;
     std::string credentialsFile;
+    std::string tokenFile;
     std::unique_ptr<ImageProcessor> imageProcessor; 
     std::unique_ptr<PDFExtractor> pdfExtractor;
 
 public:
     EmailProcessor(const std::string& modelPath, const std::string& credentialsFile,
+                   const std::string& accountName = "default",
                    const std::string& llamaExecutable = "./llama.cpp/main") 
-        : llama(modelPath, llamaExecutable), credentialsFile(credentialsFile) {
+        : llama(modelPath, llamaExecutable), credentialsFile(credentialsFile),
+          tokenFile("refresh_token_" + accountName + ".txt") {  // Account-specific token file
         try {
             imageProcessor = std::make_unique<ImageProcessor>();
             std::cout << "Image OCR processor initialized successfully" << std::endl;
         } catch (const std::exception& e) {
             std::cerr << "Warning: Could not initialize image processor: " << e.what() << std::endl;
         }
-        }
-    
+    }
     bool initialize() {
         std::cout << "Initializing Gmail client..." << std::endl;
-        return gmail.authenticate(credentialsFile);
+        return gmail.authenticate(credentialsFile, tokenFile);  // Pass the account-specific token file
     }
     void processEmails() {
         std::cout << "Checking for new emails..." << std::endl;
@@ -809,12 +809,12 @@ public:
                 // Mark original email as read
                 bool marked = gmail.markAsRead(email.id);
                 if (marked) {
-                    std::cout << " Successfully processed and replied to email." << std::endl;
+                    std::cout << "✓ Successfully processed and replied to email." << std::endl;
                 } else {
-                    std::cout << "Email sent, but failed to mark as read." << std::endl;
+                    std::cout << "✓ Email sent, but failed to mark as read." << std::endl;
                 }
             } else {
-                std::cerr << " Failed to send reply." << std::endl;
+                std::cerr << "✗ Failed to send reply." << std::endl;
             }
             
             // Add a small delay between processing emails
@@ -862,36 +862,47 @@ public:
 
 
 int main(int argc, char* argv[]) {
-    if (argc < 3) {
-        std::cerr << "Usage: " << argv[0] << " <model_path> <oauth2_credentials_json> [llama_executable_path]" << std::endl;
-        std::cerr << "Example: " << argv[0] << " ./model.gguf ./client_secret.json ./llama.cpp/main" << std::endl;
-        std::cerr << "\nNote: Use OAuth2 credentials (client_secret.json), not service account credentials." << std::endl;
+if (argc < 4) {
+        std::cerr << "Usage: " << argv[0] << " <model_path> <account1_creds.json> <account2_creds.json> [llama_executable]" << std::endl;
         return 1;
     }
     
     std::string modelPath = argv[1];
-    std::string credentialsFile = argv[2];
-    std::string llamaExecutable = (argc > 3) ? argv[3] : "./llama.cpp/main";
+    std::string llamaExecutable = (argc > 4) ? argv[4] : "../externals/llama.cpp/build/bin/llama-cli";
     
-    std::cout << "Gmail LLaMA Bot Starting..." << std::endl;
-    std::cout << "Model: " << modelPath << std::endl;
-    std::cout << "Credentials: " << credentialsFile << std::endl;
-    std::cout << "LLaMA executable: " << llamaExecutable << std::endl;
+    std::cout << "Dual-Gmail LLaMA Bot Starting..." << std::endl;
     
-    try {
-        EmailProcessor processor(modelPath, credentialsFile, llamaExecutable);
-        
-        if (!processor.initialize()) {
-            std::cerr << "Failed to initialize email processor." << std::endl;
-            return 1;
+    // Process Account 1 with account-specific token file
+    std::cout << "\n=== Setting up Account 1 ===" << std::endl;
+    EmailProcessor processor1(modelPath, argv[2], "account1", llamaExecutable);
+    if (!processor1.initialize()) {
+        std::cerr << "Failed to initialize Account 1" << std::endl;
+    }
+    
+    // Process Account 2 with account-specific token file
+    std::cout << "\n=== Setting up Account 2 ===" << std::endl;
+    EmailProcessor processor2(modelPath, argv[3], "account2", llamaExecutable);
+    if (!processor2.initialize()) {
+        std::cerr << "Failed to initialize Account 2" << std::endl;
+    }
+    
+    // Run monitoring loop for both
+    while (true) {
+        std::cout << "\n=== Checking Account 1 ===" << std::endl;
+        try {
+            processor1.processEmails();
+        } catch (const std::exception& e) {
+            std::cerr << "Account 1 error: " << e.what() << std::endl;
         }
         
-        // Run the email processing loop
-        processor.run(60); // Check every 60 seconds
+        std::cout << "\n=== Checking Account 2 ===" << std::endl;
+        try {
+            processor2.processEmails();
+        } catch (const std::exception& e) {
+            std::cerr << "Account 2 error: " << e.what() << std::endl;
+        }
         
-    } catch (const std::exception& e) {
-        std::cerr << "Fatal error: " << e.what() << std::endl;
-        return 1;
+        std::this_thread::sleep_for(std::chrono::seconds(60));
     }
     
     return 0;
