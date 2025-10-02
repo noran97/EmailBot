@@ -1,0 +1,36 @@
+cmake_minimum_required(VERSION 3.14)
+project(llama_api_server)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# 1. Include llama.cpp as a sub-directory
+# This runs the CMakeLists.txt inside the externals/llama.cpp directory,
+# making the 'llama' library target available to your project.
+add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/externals/llama.cpp)
+
+# Download cpp-httplib if not present
+include(FetchContent)
+FetchContent_Declare(
+    httplib
+    URL https://github.com/yhirose/cpp-httplib/archive/refs/tags/v0.14.3.tar.gz
+)
+FetchContent_MakeAvailable(httplib)
+
+# Create executable
+add_executable(llama_api_server llama_api_server.cpp)
+
+# 2. Link libraries (llama target is now available)
+target_link_libraries(llama_api_server
+    PRIVATE
+    llama
+    httplib::httplib
+)
+
+# 3. Include directories (If you include the whole project, you often don't need this, 
+# but it's good to keep if llama.cpp doesn't export them correctly.)
+target_include_directories(llama_api_server
+    PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/externals/llama.cpp/common
+    ${CMAKE_CURRENT_SOURCE_DIR}/externals/llama.cpp/include
+)
